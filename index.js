@@ -86,9 +86,6 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author?.bot) return;
 
-    // Debug: confirm we are receiving messages
-    console.log("MESSAGE RECEIVED:", message.channelId, message.content);
-
     const route = intakeMap.get(message.channelId);
     if (!route) return;
 
