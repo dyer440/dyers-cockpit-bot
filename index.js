@@ -1,3 +1,5 @@
+console.log("MESSAGE EVENT", message.channelId, message.author?.username);
+
 import "dotenv/config";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 
