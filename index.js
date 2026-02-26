@@ -91,10 +91,7 @@ client.on("messageCreate", async (message) => {
 
     const urls = extractUrls(message.content);
     if (urls.length === 0) return;
-
-    let ok = 0;
-    const errs = [];
-
+    
     let insertedCount = 0;
     let dedupedCount = 0;
     const errs = [];
@@ -102,8 +99,12 @@ client.on("messageCreate", async (message) => {
     for (const url of urls) {
       try {
         const out = await ingestOne({ url, vertical: route.vertical, message });
-        if (out?.inserted) insertedCount += 1;
-        else dedupedCount += 1;
+    
+        if (out?.inserted) {
+          insertedCount += 1;
+        } else {
+          dedupedCount += 1;
+        }
       } catch (e) {
         errs.push({ url, err: String(e?.message ?? e) });
       }
