@@ -110,20 +110,21 @@ client.on("messageCreate", async (message) => {
       }
     }
 
-    if (errs.length === 0) {
-      if (insertedCount > 0) await message.react("✅");
-      if (dedupedCount > 0) await message.react("☑️");
-    
-      await logToBotLogs(
-        `🧾 Ingest from <#${message.channelId}>: inserted=${insertedCount}, deduped=${dedupedCount}`
-      );
-    } else {
-      await message.react("⚠️");
-      await logToBotLogs(
-        `⚠️ Ingest errors from <#${message.channelId}>. inserted=${insertedCount} deduped=${dedupedCount} err=${errs.length}\n` +
-          errs.map((x) => `• ${x.url}\n  ↳ ${x.err}`).join("\n")
-      );
-    }
+  if (errs.length === 0) {
+    if (insertedCount > 0) await message.react("✅");
+    if (dedupedCount > 0) await message.react("☑️");
+  
+    await logToBotLogs(
+      `🧾 Ingest from <#${message.channelId}>: inserted=${insertedCount}, deduped=${dedupedCount}`
+    );
+  } else {
+    await message.react("⚠️");
+    await logToBotLogs(
+      `⚠️ Ingest errors from <#${message.channelId}>. inserted=${insertedCount} deduped=${dedupedCount} err=${errs.length}\n` +
+        errs.map((x) => `• ${x.url}\n  ↳ ${x.err}`).join("\n")
+    );
+  } // <-- you need this brace
+  
   } catch (e) {
     await logToBotLogs(`🔥 Handler crash: ${String(e?.message ?? e)}`);
   }
