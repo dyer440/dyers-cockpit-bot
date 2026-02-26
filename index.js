@@ -1,5 +1,3 @@
-console.log("MESSAGE EVENT", message.channelId, message.author?.username);
-
 import "dotenv/config";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 
@@ -13,7 +11,6 @@ const CFG = {
   token: mustEnv("DISCORD_BOT_TOKEN"),
   apiBase: mustEnv("COCKPIT_API_BASE").replace(/\/$/, ""),
   secret: mustEnv("COCKPIT_INGEST_SECRET"),
-
   channels: {
     reeRaw: mustEnv("REERAW_CHANNEL_ID"),
     coalRaw: mustEnv("COALRAW_CHANNEL_ID"),
@@ -89,16 +86,11 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author?.bot) return;
 
-    client.on("messageCreate", async (message) => {
-      console.log("MESSAGE RECEIVED:", message.channelId, message.content);
-    
-      if (message.author?.bot) return;
-    
-      ...
-    });
-    
+    // Debug: confirm we are receiving messages
+    console.log("MESSAGE RECEIVED:", message.channelId, message.content);
+
     const route = intakeMap.get(message.channelId);
-    if (!route) return; // ignore non-intake channels
+    if (!route) return;
 
     const urls = extractUrls(message.content);
     if (urls.length === 0) return;
@@ -108,11 +100,8 @@ client.on("messageCreate", async (message) => {
 
     for (const url of urls) {
       try {
-        const out = await ingestOne({ url, vertical: route.vertical, message });
-        // Treat dedupe as success
+        await ingestOne({ url, vertical: route.vertical, message });
         ok += 1;
-        // optional: uncomment if you want verbose logging
-        // await logToBotLogs(`↳ ${route.vertical} ${url} inserted=${out.inserted}`);
       } catch (e) {
         errs.push({ url, err: String(e?.message ?? e) });
       }
