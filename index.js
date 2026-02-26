@@ -87,6 +87,14 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author?.bot) return;
 
+    client.on("messageCreate", async (message) => {
+      console.log("MESSAGE RECEIVED:", message.channelId, message.content);
+    
+      if (message.author?.bot) return;
+    
+      ...
+    });
+    
     const route = intakeMap.get(message.channelId);
     if (!route) return; // ignore non-intake channels
 
