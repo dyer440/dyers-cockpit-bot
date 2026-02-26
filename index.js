@@ -95,22 +95,31 @@ client.on("messageCreate", async (message) => {
     let ok = 0;
     const errs = [];
 
+    let insertedCount = 0;
+    let dedupedCount = 0;
+    const errs = [];
+    
     for (const url of urls) {
       try {
-        await ingestOne({ url, vertical: route.vertical, message });
-        ok += 1;
+        const out = await ingestOne({ url, vertical: route.vertical, message });
+        if (out?.inserted) insertedCount += 1;
+        else dedupedCount += 1;
       } catch (e) {
         errs.push({ url, err: String(e?.message ?? e) });
       }
     }
 
     if (errs.length === 0) {
-      await message.react("✅");
-      await logToBotLogs(`✅ Ingested ${ok} link(s) from <#${message.channelId}>`);
+      if (insertedCount > 0) await message.react("✅");
+      if (dedupedCount > 0) await message.react("☑️");
+    
+      await logToBotLogs(
+        `🧾 Ingest from <#${message.channelId}>: inserted=${insertedCount}, deduped=${dedupedCount}`
+      );
     } else {
       await message.react("⚠️");
       await logToBotLogs(
-        `⚠️ Partial ingest from <#${message.channelId}>. OK=${ok} ERR=${errs.length}\n` +
+        `⚠️ Ingest errors from <#${message.channelId}>. inserted=${insertedCount} deduped=${dedupedCount} err=${errs.length}\n` +
           errs.map((x) => `• ${x.url}\n  ↳ ${x.err}`).join("\n")
       );
     }
