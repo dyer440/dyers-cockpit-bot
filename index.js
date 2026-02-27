@@ -276,24 +276,17 @@ async function publishVerticalOnce(vertical) {
 
     const ch = await client.channels.fetch(channelId);
     if (!ch || !ch.isTextBased()) throw new Error(`Brief channel not text-based: ${channelId}`);
-
-    const postedIds = [];
-
+    
     for (const item of items) {
       const msg = buildBriefMessage(item, label);
-      await ch.send(msg);
+      await ch.send(msg);                 // if this throws, it never gets marked
       postedIds.push(Number(item?.id));
+    
+      // Mark as posted immediately (prevents duplicates if crash mid-batch)
+      await markPosted([Number(item?.id)]);
+      await logToBotLogs(`📣 Posted ${vertical} processed_item_id=${item?.id}`);
     }
 
-    const updated = await markPosted(postedIds);
-    await logToBotLogs(
-      `📣 Published ${postedIds.length} ${vertical} brief(s) to <#${channelId}> (marked=${updated})`
-    );
-  } catch (e) {
-    await logToBotLogs(`🔥 Publisher crash (${vertical}): ${String(e?.message ?? e)}`);
-  } finally {
-    publishLocks[vertical] = false;
-  }
 }
 
 async function runPublisherOnce() {
