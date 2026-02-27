@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
+import { XMLParser } from "fast-xml-parser";
 
 function mustEnv(name) {
   const v = process.env[name];
@@ -305,6 +306,239 @@ async function runPublisherOnce() {
   await publishVerticalOnce("coal");
 }
 
+const rssParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "@_",
+});
+
+function normLink(s) {
+  const x = String(s || "").trim();
+  if (!x) return "";
+  // strip wrapping <> sometimes found
+  return x.replace(/^<|>$/g, "");
+}
+
+function pickRssItems(parsed) {
+  // RSS 2.0: rss.channel.item
+  const channel = parsed?.rss?.channel;
+  if (channel?.item) return Array.isArray(channel.item) ? channel.item : [channel.item];
+
+  // Atom: feed.entry
+  const feed = parsed?.feed;
+  if (feed?.entry) return Array.isArray(feed.entry) ? feed.entry : [feed.entry];
+
+  return [];
+}
+
+function getItemKey(item) {
+  // Prefer guid/id, else link, else title hash-ish
+  const guid = item?.guid?.["#text"] ?? item?.guid;
+  const id = item?.id;
+  const link =
+    typeof item?.link === "string"
+      ? item.link
+      : item?.link?.["@_href"] ?? item?.link?.href ?? "";
+  const title = item?.title?.["#text"] ?? item?.title ?? "";
+
+  const key = String(guid || id || link || title).trim();
+  return key ? key.slice(0, 500) : "";
+}
+
+function getItemLink(item) {
+  // RSS: link can be string
+  if (typeof item?.link === "string") return normLink(item.link);
+
+  // Atom: link is object or array with href
+  const l = item?.link;
+  if (Array.isArray(l)) {
+    const alt = l.find((x) => x?.["@_rel"] === "alternate") || l[0];
+    return normLink(alt?.["@_href"] || alt?.href || "");
+  }
+  return normLink(l?.["@_href"] || l?.href || "");
+}
+
+async function cockpitGet(path) {
+  const secret = mustEnv("COCKPIT_PROCESS_SECRET");
+  const res = await fetch(`${CFG.apiBase}${path}`, {
+    method: "GET",
+    headers: { "x-cockpit-secret": secret },
+  });
+  const txt = await res.text();
+  if (!res.ok) throw new Error(`GET ${path} failed ${res.status}: ${txt.slice(0, 300)}`);
+  return JSON.parse(txt);
+}
+
+async function cockpitPost(path, body) {
+  const secret = mustEnv("COCKPIT_PROCESS_SECRET");
+  const res = await fetch(`${CFG.apiBase}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-cockpit-secret": secret },
+    body: JSON.stringify(body),
+  });
+  const txt = await res.text();
+  if (!res.ok) throw new Error(`POST ${path} failed ${res.status}: ${txt.slice(0, 300)}`);
+  return JSON.parse(txt);
+}
+
+async function fetchSeenKeys(sourceId, keys) {
+  if (!keys.length) return new Set();
+  const out = await cockpitPost("/api/sources/rss/seen", { source_id: sourceId, keys });
+  const seen = Array.isArray(out?.seen) ? out.seen : [];
+  return new Set(seen);
+}
+
+async function ingestRssItem({ url, vertical, sourceId, sourceName }) {
+  const res = await fetch(`${CFG.apiBase}/api/ingest`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-cockpit-secret": CFG.ingestSecret,
+    },
+    body: JSON.stringify({
+      url,
+      vertical,
+      source: "rss",
+      metadata: { source_id: sourceId, source_name: sourceName },
+      posted_at: new Date().toISOString(),
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Ingest failed ${res.status}: ${body.slice(0, 300)}`);
+  }
+
+  return res.json().catch(() => ({}));
+}
+
+async function pollOneFeed(src) {
+  const maxItems = clampInt(process.env.COCKPIT_RSS_MAX_ITEMS_PER_FEED || 10, 10, 1, 50);
+  const ua = getEnv("COCKPIT_RSS_USER_AGENT", "DyersCockpitBot/1.0 (+https://dyerempire.com)");
+
+  let lastError = null;
+  let etag = src?.etag || null;
+  let lastModified = src?.last_modified || null;
+
+  try {
+    const headers = { "User-Agent": ua, Accept: "application/rss+xml, application/atom+xml, text/xml;q=0.9, */*;q=0.8" };
+    if (etag) headers["If-None-Match"] = etag;
+    if (lastModified) headers["If-Modified-Since"] = lastModified;
+
+    const res = await fetch(src.url, { method: "GET", headers, redirect: "follow" });
+
+    if (res.status === 304) {
+      // Not modified
+      await cockpitPost("/api/sources/rss/report", {
+        source_id: src.id,
+        etag,
+        last_modified: lastModified,
+        last_error: null,
+        seen_keys: [],
+      });
+      return { fetched: 0, ingested: 0, skipped: 0 };
+    }
+
+    const xml = await res.text();
+
+    if (!res.ok) throw new Error(`RSS fetch failed ${res.status}: ${xml.slice(0, 200)}`);
+
+    etag = res.headers.get("etag") || etag;
+    lastModified = res.headers.get("last-modified") || lastModified;
+
+    const parsed = rssParser.parse(xml);
+    const items = pickRssItems(parsed).slice(0, maxItems);
+
+    const keys = items.map(getItemKey).filter(Boolean);
+    const seenSet = await fetchSeenKeys(src.id, keys);
+
+    let ingested = 0;
+    let skipped = 0;
+    const newlySeen = [];
+
+    for (const item of items) {
+      const key = getItemKey(item);
+      const link = getItemLink(item);
+      if (!key || !link) continue;
+
+      if (seenSet.has(key)) {
+        skipped += 1;
+        continue;
+      }
+
+      // Ingest via existing endpoint, DB dedupe handles URL duplicates across sources
+      const out = await ingestRssItem({
+        url: link,
+        vertical: src.vertical,
+        sourceId: src.id,
+        sourceName: src.name,
+      });
+
+      newlySeen.push(key);
+
+      if (out?.inserted) ingested += 1;
+      else skipped += 1; // URL was already in raw_items
+    }
+
+    await cockpitPost("/api/sources/rss/report", {
+      source_id: src.id,
+      etag,
+      last_modified: lastModified,
+      last_error: null,
+      seen_keys: newlySeen,
+    });
+
+    return { fetched: items.length, ingested, skipped };
+  } catch (e) {
+    lastError = String(e?.message ?? e);
+    await cockpitPost("/api/sources/rss/report", {
+      source_id: src.id,
+      etag,
+      last_modified: lastModified,
+      last_error: lastError,
+      seen_keys: [],
+    });
+    throw e;
+  }
+}
+
+let rssPolling = false;
+
+async function runRssOnce() {
+  if (rssPolling) return;
+  rssPolling = true;
+
+  try {
+    const limitSources = clampInt(process.env.COCKPIT_RSS_LIMIT_SOURCES || 100, 100, 1, 500);
+    const out = await cockpitGet(`/api/sources/rss?limit=${encodeURIComponent(String(limitSources))}`);
+    const sources = Array.isArray(out?.sources) ? out.sources : [];
+
+    if (!sources.length) return;
+
+    let totalIngested = 0;
+    let totalFetched = 0;
+    let totalSkipped = 0;
+
+    for (const src of sources) {
+      try {
+        const r = await pollOneFeed(src);
+        totalFetched += r.fetched;
+        totalIngested += r.ingested;
+        totalSkipped += r.skipped;
+      } catch (e) {
+        await logToBotLogs(`⚠️ RSS poll error for "${src?.name}" (${src?.vertical}): ${String(e?.message ?? e)}`);
+      }
+    }
+
+    if (totalIngested > 0) {
+      await logToBotLogs(`📥 RSS inflow: fetched=${totalFetched} ingested=${totalIngested} skipped=${totalSkipped}`);
+    }
+  } catch (e) {
+    await logToBotLogs(`🔥 RSS runner crash: ${String(e?.message ?? e)}`);
+  } finally {
+    rssPolling = false;
+  }
+}
+
 // ---------- ready ----------
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -313,14 +547,21 @@ client.once("ready", async () => {
   const procIntervalMin = clampInt(process.env.COCKPIT_PROCESS_INTERVAL_MIN || 10, 10, 1, 1440);
   const procIntervalMs = procIntervalMin * 60 * 1000;
 
-  setTimeout(runProcessorOnce, 15_000);
+  setTimeout(runProcessorOnce, 25_000);
   setInterval(runProcessorOnce, procIntervalMs);
 
   const pubIntervalMin = clampInt(process.env.COCKPIT_PUBLISH_INTERVAL_MIN || 15, 15, 1, 1440);
   const pubIntervalMs = pubIntervalMin * 60 * 1000;
 
-  setTimeout(runPublisherOnce, 30_000);
+  setTimeout(runPublisherOnce, 40_000);
   setInterval(runPublisherOnce, pubIntervalMs);
+
+  const rssIntervalMin = clampInt(process.env.COCKPIT_RSS_INTERVAL_MIN || 10, 10, 1, 1440);
+  const rssIntervalMs = rssIntervalMin * 60 * 1000;
+
+  setTimeout(runRssOnce, 10_000);
+  setInterval(runRssOnce, rssIntervalMs);
+  
 });
 
 // ---------- message handler ----------
