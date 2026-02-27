@@ -41,6 +41,46 @@ function extractUrls(text) {
   return [...new Set(matches.map((u) => u.trim()))];
 }
 
+async function runProcessorOnce() {
+  try {
+    const base = mustEnv("COCKPIT_PROCESS_URL").replace(/\/$/, "");
+    const secret = mustEnv("COCKPIT_PROCESS_SECRET");
+    const limit = Number(process.env.COCKPIT_PROCESS_LIMIT || 20);
+
+    const url = `${base}?secret=${encodeURIComponent(secret)}&limit=${encodeURIComponent(
+      String(limit)
+    )}`;
+
+    const res = await fetch(url, { method: "GET" });
+    const text = await res.text();
+
+    if (!res.ok) {
+      await logToBotLogs(`⚠️ Process run failed (${res.status}): ${text.slice(0, 400)}`);
+      return;
+    }
+
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      await logToBotLogs(`⚠️ Process returned non-JSON: ${text.slice(0, 400)}`);
+      return;
+    }
+
+    const processed = json?.processed ?? 0;
+    const picked = json?.picked ?? 0;
+
+    // Only log when something happened
+    if (picked > 0 || processed > 0) {
+      await logToBotLogs(`🧠 Process run: picked=${picked}, processed=${processed}`);
+    }
+  } catch (e) {
+    await logToBotLogs(`🔥 Process runner crash: ${String(e?.message ?? e)}`);
+  }
+}
+
+
+
 async function logToBotLogs(msg) {
   try {
     const ch = await client.channels.fetch(CFG.channels.botLogs);
