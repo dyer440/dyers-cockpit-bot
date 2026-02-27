@@ -9,6 +9,7 @@
   "dependencies": {
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
+    "fast-xml-parser": "^4.x.x",
     "node-fetch": "^3.3.2"
   }
 }
