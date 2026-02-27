@@ -28,7 +28,6 @@ const CFG = {
     coalRaw: mustEnv("COALRAW_CHANNEL_ID"),
     policyRaw: mustEnv("POLICYRAW_CHANNEL_ID"),
     botLogs: mustEnv("BOTLOGS_CHANNEL_ID"),
-    // Brief output channels (optional but recommended)
     reeBrief: getEnv("REEBRIEF_CHANNEL_ID", ""),
     coalBrief: getEnv("COALBRIEF_CHANNEL_ID", ""),
     triage: getEnv("TRIAGE_CHANNEL_ID", "1476283871208145087"),
@@ -114,10 +113,8 @@ function buildBriefMessage(item, verticalLabel) {
     url ? `\n**Source:** ${url}` : "",
   ].filter(Boolean);
 
-  // Discord hard limit is 2000 chars per message
   let msg = parts.join("\n");
   if (msg.length > 1900) {
-    // Trim bullets then why then summary if needed
     const shortBullets = bulletsBlock
       ? bulletsBlock.split("\n").slice(0, 3).join("\n")
       : "";
@@ -131,9 +128,7 @@ function buildBriefMessage(item, verticalLabel) {
     ].filter(Boolean);
     msg = parts2.join("\n");
   }
-  if (msg.length > 1900) {
-    msg = msg.slice(0, 1890) + "…";
-  }
+  if (msg.length > 1900) msg = msg.slice(0, 1890) + "…";
   return msg;
 }
 
@@ -195,7 +190,6 @@ async function runProcessorOnce() {
     const processed = json?.processed ?? 0;
     const picked = json?.picked ?? 0;
 
-    // Only log when something happened
     if (picked > 0 || processed > 0) {
       await logToBotLogs(`🧠 Process run: picked=${picked}, processed=${processed}`);
     }
@@ -205,23 +199,17 @@ async function runProcessorOnce() {
 }
 
 // ---------- publisher loop ----------
-const publishLocks = {
-  ree: false,
-  coal: false,
-};
+const publishLocks = { ree: false, coal: false };
 
 async function fetchUnposted(vertical, limit) {
-  const secret = mustEnv("COCKPIT_PROCESS_SECRET"); // reuse
+  const secret = mustEnv("COCKPIT_PROCESS_SECRET");
   const url = `${CFG.apiBase}/api/brief/unposted?vertical=${encodeURIComponent(
     vertical
   )}&limit=${encodeURIComponent(String(limit))}`;
 
-  const res = await fetch(url, {
-    method: "GET",
-    headers: { "x-cockpit-secret": secret },
-  });
-
+  const res = await fetch(url, { method: "GET", headers: { "x-cockpit-secret": secret } });
   const txt = await res.text();
+
   if (!res.ok) throw new Error(`unposted fetch failed ${res.status}: ${txt.slice(0, 300)}`);
 
   let json;
@@ -230,19 +218,17 @@ async function fetchUnposted(vertical, limit) {
   } catch {
     throw new Error(`unposted returned non-JSON: ${txt.slice(0, 300)}`);
   }
+
   return Array.isArray(json?.items) ? json.items : [];
 }
 
 async function markPosted(ids) {
   if (!ids || ids.length === 0) return 0;
 
-  const secret = mustEnv("COCKPIT_PROCESS_SECRET"); // reuse
+  const secret = mustEnv("COCKPIT_PROCESS_SECRET");
   const res = await fetch(`${CFG.apiBase}/api/brief/mark-posted`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-cockpit-secret": secret,
-    },
+    headers: { "Content-Type": "application/json", "x-cockpit-secret": secret },
     body: JSON.stringify({ ids }),
   });
 
@@ -267,51 +253,54 @@ async function publishVerticalOnce(vertical) {
     let channelId = "";
     let label = "";
 
-if (vertical === "ree") {
-  channelId = CFG.channels.reeBrief;
-  label = "REE";
-} else if (vertical === "coal") {
-  channelId = CFG.channels.coalBrief;
-  label = "Coal";
-} else {
-  return;
-}
+    if (vertical === "ree") {
+      channelId = CFG.channels.reeBrief;
+      label = "REE";
+    } else if (vertical === "coal") {
+      channelId = CFG.channels.coalBrief;
+      label = "Coal";
+    } else {
+      return;
+    }
 
-const items = await fetchUnposted(vertical, limit);
-if (!items.length) return;
+    // Publishing not configured
+    if (!channelId) return;
 
-const ch = await fetchTextChannel(channelId);
-if (!ch) throw new Error(`Brief channel not text-based: ${channelId}`);
+    const items = await fetchUnposted(vertical, limit);
+    if (!items.length) return;
 
-const triageCh = await fetchTextChannel(CFG.channels.triage);
+    const ch = await fetchTextChannel(channelId);
+    if (!ch) throw new Error(`Brief channel not text-based: ${channelId}`);
 
-const TRIAGE_SCORE = clampInt(process.env.COCKPIT_TRIAGE_SCORE || 85, 85, 1, 100);
+    const triageCh = await fetchTextChannel(CFG.channels.triage);
 
-for (const item of items) {
-  const id = Number(item?.id);
-  if (!Number.isFinite(id) || id <= 0) continue;
+    const TRIAGE_SCORE = clampInt(process.env.COCKPIT_TRIAGE_SCORE || 85, 85, 1, 100);
 
-  const msg = buildBriefMessage(item, label);
+    for (const item of items) {
+      const id = Number(item?.id);
+      if (!Number.isFinite(id) || id <= 0) continue;
 
-  // Post to brief channel
-  await ch.send(msg);
+      const msg = buildBriefMessage(item, label);
 
-  // If high signal, also post to triage
-  const score = Number(item?.relevance_score ?? 0);
-  if (triageCh && Number.isFinite(score) && score >= TRIAGE_SCORE) {
-    await triageCh.send(`🚨 **High-signal ${label}** (Score: **${score}**)\n\n${msg}`);
-    await logToBotLogs(`🚨 Triage posted ${vertical} processed_item_id=${id} score=${score}`);
+      await ch.send(msg);
+
+      const score = Number(item?.relevance_score ?? 0);
+      if (triageCh && Number.isFinite(score) && score >= TRIAGE_SCORE) {
+        await triageCh.send(`🚨 **High-signal ${label}** (Score: **${score}**)\n\n${msg}`);
+        await logToBotLogs(`🚨 Triage posted ${vertical} processed_item_id=${id} score=${score}`);
+      }
+
+      await markPosted([id]);
+      await logToBotLogs(`📣 Posted ${vertical} processed_item_id=${id}`);
+    }
+  } catch (e) {
+    await logToBotLogs(`🔥 Publisher crash (${vertical}): ${String(e?.message ?? e)}`);
+  } finally {
+    publishLocks[vertical] = false;
   }
-
-  // Mark posted (idempotence)
-  await markPosted([id]);
-  await logToBotLogs(`📣 Posted ${vertical} processed_item_id=${id}`);
-}
-
 }
 
 async function runPublisherOnce() {
-  // Run both, independently locked
   await publishVerticalOnce("ree");
   await publishVerticalOnce("coal");
 }
@@ -321,14 +310,12 @@ client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await logToBotLogs(`🟢 Online as ${client.user.tag}`);
 
-  // Processor loop (Render bot acts as cron)
   const procIntervalMin = clampInt(process.env.COCKPIT_PROCESS_INTERVAL_MIN || 10, 10, 1, 1440);
   const procIntervalMs = procIntervalMin * 60 * 1000;
 
   setTimeout(runProcessorOnce, 15_000);
   setInterval(runProcessorOnce, procIntervalMs);
 
-  // Publisher loop
   const pubIntervalMin = clampInt(process.env.COCKPIT_PUBLISH_INTERVAL_MIN || 15, 15, 1, 1440);
   const pubIntervalMs = pubIntervalMin * 60 * 1000;
 
@@ -354,12 +341,8 @@ client.on("messageCreate", async (message) => {
     for (const url of urls) {
       try {
         const out = await ingestOne({ url, vertical: route.vertical, message });
-
-        if (out?.inserted) {
-          insertedCount += 1;
-        } else {
-          dedupedCount += 1;
-        }
+        if (out?.inserted) insertedCount += 1;
+        else dedupedCount += 1;
       } catch (e) {
         errs.push({ url, err: String(e?.message ?? e) });
       }
