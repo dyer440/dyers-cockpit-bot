@@ -2,6 +2,10 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import { XMLParser } from "fast-xml-parser";
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function mustEnv(name) {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env var: ${name}`);
@@ -387,7 +391,7 @@ async function fetchSeenKeys(sourceId, keys) {
   return new Set(seen);
 }
 
-async function ingestRssItem({ url, vertical, sourceId, sourceName }) {
+async function ingestRssItem({ url, vertical, sourceId, sourceName, sourceType }) {
   const res = await fetch(`${CFG.apiBase}/api/ingest`, {
     method: "POST",
     headers: {
@@ -398,7 +402,7 @@ async function ingestRssItem({ url, vertical, sourceId, sourceName }) {
       url,
       vertical,
       source: "rss",
-      metadata: { source_id: sourceId, source_name: sourceName },
+      metadata: { source_id: sourceId, source_name: sourceName, source_type: sourceType },      
       posted_at: new Date().toISOString(),
     }),
   });
