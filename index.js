@@ -67,6 +67,13 @@ async function logToBotLogs(msg) {
   }
 }
 
+async function fetchTextChannel(channelId) {
+  if (!channelId) return null;
+  const ch = await client.channels.fetch(channelId);
+  if (ch && ch.isTextBased()) return ch;
+  return null;
+}
+
 function fmtTags(tags) {
   if (!Array.isArray(tags) || tags.length === 0) return "";
   const cleaned = tags
@@ -260,33 +267,46 @@ async function publishVerticalOnce(vertical) {
     let channelId = "";
     let label = "";
 
-    if (vertical === "ree") {
-      channelId = CFG.channels.reeBrief;
-      label = "REE";
-    } else if (vertical === "coal") {
-      channelId = CFG.channels.coalBrief;
-      label = "Coal";
-    } else {
-      return;
-    }
+if (vertical === "ree") {
+  channelId = CFG.channels.reeBrief;
+  label = "REE";
+} else if (vertical === "coal") {
+  channelId = CFG.channels.coalBrief;
+  label = "Coal";
+} else {
+  return;
+}
 
-    if (!channelId) return; // publishing not configured
+const items = await fetchUnposted(vertical, limit);
+if (!items.length) return;
 
-    const items = await fetchUnposted(vertical, limit);
-    if (!items.length) return;
+const ch = await fetchTextChannel(channelId);
+if (!ch) throw new Error(`Brief channel not text-based: ${channelId}`);
 
-    const ch = await client.channels.fetch(channelId);
-    if (!ch || !ch.isTextBased()) throw new Error(`Brief channel not text-based: ${channelId}`);
-    
-    for (const item of items) {
-      const msg = buildBriefMessage(item, label);
-      await ch.send(msg);                 // if this throws, it never gets marked
-      postedIds.push(Number(item?.id));
-    
-      // Mark as posted immediately (prevents duplicates if crash mid-batch)
-      await markPosted([Number(item?.id)]);
-      await logToBotLogs(`📣 Posted ${vertical} processed_item_id=${item?.id}`);
-    }
+const triageCh = await fetchTextChannel(CFG.channels.triage);
+
+const TRIAGE_SCORE = clampInt(process.env.COCKPIT_TRIAGE_SCORE || 85, 85, 1, 100);
+
+for (const item of items) {
+  const id = Number(item?.id);
+  if (!Number.isFinite(id) || id <= 0) continue;
+
+  const msg = buildBriefMessage(item, label);
+
+  // Post to brief channel
+  await ch.send(msg);
+
+  // If high signal, also post to triage
+  const score = Number(item?.relevance_score ?? 0);
+  if (triageCh && Number.isFinite(score) && score >= TRIAGE_SCORE) {
+    await triageCh.send(`🚨 **High-signal ${label}** (Score: **${score}**)\n\n${msg}`);
+    await logToBotLogs(`🚨 Triage posted ${vertical} processed_item_id=${id} score=${score}`);
+  }
+
+  // Mark posted (idempotence)
+  await markPosted([id]);
+  await logToBotLogs(`📣 Posted ${vertical} processed_item_id=${id}`);
+}
 
 }
 
