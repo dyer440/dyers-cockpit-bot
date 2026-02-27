@@ -2,6 +2,22 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import { XMLParser } from "fast-xml-parser";
 
+
+function parseItemDate(item) {
+  const d =
+    item?.pubDate ??
+    item?.published ??
+    item?.updated ??
+    item?.["dc:date"] ??
+    null;
+
+  if (!d) return null;
+
+  const s = typeof d === "string" ? d : (d?.["#text"] ?? "");
+  const t = Date.parse(String(s));
+  return Number.isFinite(t) ? new Date(t) : null;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -490,22 +506,40 @@ async function pollOneFeed(src) {
       const key = getItemKey(item);
       const link = getItemLink(item);
       if (!key || !link) continue;
-
+    
       if (seenSet.has(key)) {
         skipped += 1;
         continue;
       }
-
+    
+      // ---- AGE GATE START ----
+      const maxAgeHrs = clampInt(
+        process.env.COCKPIT_RSS_MAX_AGE_HOURS || 48,
+        48,
+        1,
+        720
+      );
+      const cutoff = Date.now() - maxAgeHrs * 60 * 60 * 1000;
+    
+      const dt = parseItemDate(item);
+      if (dt && dt.getTime() < cutoff) {
+        // mark as seen so we never ingest it again
+        newlySeen.push(key);
+        skipped += 1;
+        continue;
+      }
+      // ---- AGE GATE END ----
+    
       const out = await ingestRssItem({
         url: link,
         vertical: src.vertical,
         sourceId: src.id,
         sourceName: src.name,
-        sourceType, // NEW
+        sourceType,
       });
-
+    
       newlySeen.push(key);
-
+    
       if (out?.inserted) ingested += 1;
       else skipped += 1;
     }
