@@ -120,7 +120,17 @@ async function ingestOne({ url, vertical, message }) {
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
   await logToBotLogs(`🟢 Online as ${client.user.tag}`);
+
+  // Start background processor loop (Render bot acts as cron)
+  const intervalMin = Number(process.env.COCKPIT_PROCESS_INTERVAL_MIN || 10);
+  const intervalMs = Math.max(1, intervalMin) * 60 * 1000;
+
+  // Run once shortly after boot, then on interval
+  setTimeout(runProcessorOnce, 15_000);
+  setInterval(runProcessorOnce, intervalMs);
 });
+
+
 
 client.on("messageCreate", async (message) => {
   try {
