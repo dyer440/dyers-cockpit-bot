@@ -280,7 +280,7 @@ async function publishVerticalOnce(vertical) {
       const id = Number(item?.id);
       if (!Number.isFinite(id) || id <= 0) continue;
 
-      const msg = buildBriefMessage(item, label);
+      const msg = buildBriefMessage(item, label) + `\n<${item.url}>`;
 
       await ch.send(msg);
 
