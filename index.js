@@ -413,21 +413,48 @@ async function ingestRssItem({ url, vertical, sourceId, sourceName }) {
 
 async function pollOneFeed(src) {
   const maxItems = clampInt(process.env.COCKPIT_RSS_MAX_ITEMS_PER_FEED || 10, 10, 1, 50);
-  const ua = getEnv("COCKPIT_RSS_USER_AGENT", "DyersCockpitBot/1.0 (+https://dyerempire.com)");
+
+  const defaultUa = getEnv(
+    "COCKPIT_RSS_USER_AGENT",
+    "DyersCockpitBot/1.0 (+https://dyerempire.com)"
+  );
+
+  const urlStr = String(src?.url || "");
+  const domain = urlStr.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+  const isSec = domain === "www.sec.gov" || domain === "sec.gov";
+
+  // Politeness delay for SEC
+  const secDelayMs = clampInt(process.env.COCKPIT_SEC_DELAY_MS || 1200, 1200, 0, 10000);
+  if (isSec && secDelayMs > 0) {
+    await sleep(secDelayMs);
+  }
+
+  // Optionally use a slightly more "browser-like" UA for SEC
+  const ua = isSec
+    ? getEnv(
+        "COCKPIT_SEC_USER_AGENT",
+        defaultUa
+      )
+    : defaultUa;
 
   let lastError = null;
   let etag = src?.etag || null;
   let lastModified = src?.last_modified || null;
 
+  // Tag SEC as corporate
+  const sourceType = isSec ? "corporate" : "rss";
+
   try {
-    const headers = { "User-Agent": ua, Accept: "application/rss+xml, application/atom+xml, text/xml;q=0.9, */*;q=0.8" };
+    const headers = {
+      "User-Agent": ua,
+      Accept: "application/rss+xml, application/atom+xml, text/xml;q=0.9, */*;q=0.8",
+    };
     if (etag) headers["If-None-Match"] = etag;
     if (lastModified) headers["If-Modified-Since"] = lastModified;
 
     const res = await fetch(src.url, { method: "GET", headers, redirect: "follow" });
 
     if (res.status === 304) {
-      // Not modified
       await cockpitPost("/api/sources/rss/report", {
         source_id: src.id,
         etag,
@@ -465,18 +492,18 @@ async function pollOneFeed(src) {
         continue;
       }
 
-      // Ingest via existing endpoint, DB dedupe handles URL duplicates across sources
       const out = await ingestRssItem({
         url: link,
         vertical: src.vertical,
         sourceId: src.id,
         sourceName: src.name,
+        sourceType, // NEW
       });
 
       newlySeen.push(key);
 
       if (out?.inserted) ingested += 1;
-      else skipped += 1; // URL was already in raw_items
+      else skipped += 1;
     }
 
     await cockpitPost("/api/sources/rss/report", {
