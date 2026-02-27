@@ -274,8 +274,8 @@ async function publishVerticalOnce(vertical) {
 
     const triageCh = await fetchTextChannel(CFG.channels.triage);
 
-    const TRIAGE_SCORE = clampInt(process.env.COCKPIT_TRIAGE_SCORE || 85, 85, 1, 100);
-
+    const TRIAGE_SCORE = clampInt(process.env.COCKPIT_TRIAGE_SCORE, 85, 1, 100);
+    
     for (const item of items) {
       const id = Number(item?.id);
       if (!Number.isFinite(id) || id <= 0) continue;
