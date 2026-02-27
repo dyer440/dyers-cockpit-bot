@@ -31,6 +31,7 @@ const CFG = {
     // Brief output channels (optional but recommended)
     reeBrief: getEnv("REEBRIEF_CHANNEL_ID", ""),
     coalBrief: getEnv("COALBRIEF_CHANNEL_ID", ""),
+    triage: getEnv("TRIAGE_CHANNEL_ID", "1476283871208145087"),
   },
 };
 
