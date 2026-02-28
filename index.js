@@ -434,6 +434,44 @@ async function ingestRssItem({ url, vertical, sourceId, sourceName, sourceType }
   return res.json().catch(() => ({}));
 }
 
+function atomTitle(item) {
+  const t = item?.title;
+  if (typeof t === "string") return t;
+  if (t && typeof t === "object" && typeof t["#text"] === "string") return t["#text"];
+  return "";
+}
+
+function secPassesMaterialFilter(item) {
+  const title = atomTitle(item).toLowerCase();
+
+  // Allow-list keywords (tune later)
+  const allow = [
+    "award",
+    "grant",
+    "department of defense",
+    "dod",
+    "doe",
+    "contract",
+    "agreement",
+    "offtake",
+    "credit",
+    "facility",
+    "financing",
+    "private placement",
+    "strategic",
+    "rare earth",
+    "separation",
+    "magnet",
+    "processing",
+    "acquisition",
+    "merger",
+    "sale",
+    "joint venture",
+  ];
+
+  return allow.some((k) => title.includes(k));
+}
+
 async function pollOneFeed(src) {
   const maxItems = clampInt(process.env.COCKPIT_RSS_MAX_ITEMS_PER_FEED || 10, 10, 1, 50);
 
@@ -511,6 +549,13 @@ async function pollOneFeed(src) {
       if (!key || !link) continue;
     
       if (seenSet.has(key)) {
+        skipped += 1;
+        continue;
+      }
+
+      // SEC Atom noise filter: mark as seen but do not ingest if not material
+      if (isSec && !secPassesMaterialFilter(item)) {
+        newlySeen.push(key);
         skipped += 1;
         continue;
       }
