@@ -2,6 +2,9 @@ import "dotenv/config";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 import { XMLParser } from "fast-xml-parser";
 
+function isoNow() {
+  return new Date().toISOString();
+}
 
 function parseItemDate(item) {
   const d =
@@ -604,6 +607,20 @@ async function runRssOnce() {
   }
 }
 
+async function heartbeatOnce() {
+  try {
+    const procMin = process.env.COCKPIT_PROCESS_INTERVAL_MIN || "(unset)";
+    const pubMin = process.env.COCKPIT_PUBLISH_INTERVAL_MIN || "(unset)";
+    const rssMin = process.env.COCKPIT_RSS_INTERVAL_MIN || "(unset)";
+
+    await logToBotLogs(
+      `🫀 Heartbeat ${isoNow()} | process=${procMin}m publish=${pubMin}m rss=${rssMin}m`
+    );
+  } catch {
+    // ignore
+  }
+}
+
 // ---------- ready ----------
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -626,6 +643,10 @@ client.once("ready", async () => {
 
   setTimeout(runRssOnce, 10_000);
   setInterval(runRssOnce, rssIntervalMs);
+
+  // Heartbeat (proof-of-life)
+  setTimeout(heartbeatOnce, 60_000); // 1 min after boot
+  setInterval(heartbeatOnce, 60 * 60 * 1000); // every hour
   
 });
 
