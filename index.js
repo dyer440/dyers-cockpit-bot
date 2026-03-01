@@ -505,6 +505,32 @@ function shouldSkipFeedItem({ item, domain }) {
   return { skip: false };
 }
 
+function isMarketIndexAnnouncementsList(urlStr) {
+  const u = String(urlStr || "").toLowerCase();
+  return u.includes("marketindex.com.au/asx/") && u.endsWith("/announcements");
+}
+
+function parseMarketIndexAnnouncementLinks(html) {
+  // Extract links like: /asx/lyc/announcements/<slug>
+  const re = /href="(\/asx\/[a-z0-9]+\/announcements\/[^"]+)"/gi;
+  const out = [];
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    out.push(m[1]);
+  }
+  // Unique + keep order
+  const uniq = [];
+  const seen = new Set();
+  for (const p of out) {
+    if (!seen.has(p)) {
+      seen.add(p);
+      uniq.push("https://www.marketindex.com.au" + p);
+    }
+  }
+  return uniq;
+}
+
+
 async function pollOneFeed(src) {
   const maxItems = clampInt(process.env.COCKPIT_RSS_MAX_ITEMS_PER_FEED || 10, 10, 1, 50);
 
@@ -550,14 +576,60 @@ async function pollOneFeed(src) {
       return { fetched: 0, ingested: 0, skipped: 0 };
     }
 
-    const xml = await res.text();
+    const bodyText = await res.text();
 
-    if (!res.ok) throw new Error(`RSS fetch failed ${res.status}: ${xml.slice(0, 200)}`);
-
+    if (!res.ok) throw new Error(`Feed fetch failed ${res.status}: ${bodyText.slice(0, 200)}`);
+    
     etag = res.headers.get("etag") || etag;
     lastModified = res.headers.get("last-modified") || lastModified;
-
-    const parsed = rssParser.parse(xml);
+    
+    // --- MarketIndex announcements list (HTML) ---
+    if (isMarketIndexAnnouncementsList(src.url)) {
+      const links = parseMarketIndexAnnouncementLinks(bodyText).slice(0, maxItems);
+    
+      // Treat each link as an "item"
+      const keys = links.map((u) => u).filter(Boolean);
+      const seenSet = await fetchSeenKeys(src.id, keys);
+    
+      let ingested = 0;
+      let skipped = 0;
+      const newlySeen = [];
+    
+      for (const link of links) {
+        const key = link;
+        if (seenSet.has(key)) {
+          skipped += 1;
+          continue;
+        }
+    
+        // Age gate doesn’t apply here reliably (list page doesn’t expose machine dates).
+        // We still rely on your downstream filters and the fact these pages are recent.
+        const out = await ingestRssItem({
+          url: link,
+          vertical: src.vertical,
+          sourceId: src.id,
+          sourceName: src.name,
+          sourceType: "corporate",
+        });
+    
+        newlySeen.push(key);
+        if (out?.inserted) ingested += 1;
+        else skipped += 1;
+      }
+    
+      await cockpitPost("/api/sources/rss/report", {
+        source_id: src.id,
+        etag,
+        last_modified: lastModified,
+        last_error: null,
+        seen_keys: newlySeen,
+      });
+    
+      return { fetched: links.length, ingested, skipped };
+    }
+    
+    // --- RSS/Atom normal path ---
+    const parsed = rssParser.parse(bodyText);
     const items = pickRssItems(parsed).slice(0, maxItems);
 
     const keys = items.map(getItemKey).filter(Boolean);
