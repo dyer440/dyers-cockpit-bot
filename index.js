@@ -536,28 +536,56 @@ function isDiscoveryAlertCategory(urlStr) {
 }
 
 function parseDiscoveryAlertLinks(html) {
-  // Grab absolute links to discoveryalert articles.
   const re = /href="(https:\/\/discoveryalert\.com\.au\/[^"]+)"/gi;
   const out = [];
   let m;
   while ((m = re.exec(html)) !== null) out.push(m[1]);
 
-  // Filter out obvious non-articles
   const filtered = out.filter((u) => {
     const x = u.toLowerCase();
+
     if (!x.startsWith("https://discoveryalert.com.au/")) return false;
-    if (x.includes("/category/")) return false;
-    if (x.includes("/tag/")) return false;
-    if (x.includes("/author/")) return false;
-    if (x.includes("/wp-")) return false;
-    if (x.includes("#")) return false;
-    if (x.includes("?")) return false;
-    // Most real articles are a slug at root path
-    // e.g. https://discoveryalert.com.au/mp-materials-us-government-price-support-transforms-company-finances/
+    if (x.includes("?") || x.includes("#")) return false;
+
+    // Drop obvious non-article areas
+    if (x.includes("/category/") || x.includes("/tag/") || x.includes("/author/")) return false;
+    if (x.includes("/wp-") || x.includes("/page/")) return false;
+
+    // Drop feeds explicitly
+    if (x.endsWith("/feed/")) return false;
+    if (x.includes("/comments/feed/")) return false;
+
+    // Root slug only
+    const path = x.replace("https://discoveryalert.com.au/", "");
+    const parts = path.split("/").filter(Boolean);
+    if (parts.length !== 1) return false;
+
+    const slug = parts[0];
+
+    // Block known static/utility pages
+    const deny = new Set([
+      "ai-trade-alert",
+      "privacy-policy",
+      "terms",
+      "contact",
+      "about",
+      "subscribe",
+      "newsletter",
+      "login",
+    ]);
+    if (deny.has(slug)) return false;
+
+    // Require "article-like" slug characteristics:
+    // Your examples end with -2026. This is a great discriminator.
+    if (!slug.includes("-202")) return false;
+
+    // sanity
+    if (slug.length < 12) return false;
+
     return true;
   });
 
-  // Unique + preserve order
+  // Unique preserving order
   const uniq = [];
   const seen = new Set();
   for (const u of filtered) {
