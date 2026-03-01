@@ -287,7 +287,6 @@ async function publishVerticalOnce(vertical) {
       return;
     }
 
-    // Publishing not configured
     if (!channelId) return;
 
     const items = await fetchUnposted(vertical, limit);
@@ -299,7 +298,7 @@ async function publishVerticalOnce(vertical) {
     const triageCh = await fetchTextChannel(CFG.channels.triage);
 
     const TRIAGE_SCORE = clampInt(process.env.COCKPIT_TRIAGE_SCORE, 85, 1, 100);
-    
+
     for (const item of items) {
       const id = Number(item?.id);
       if (!Number.isFinite(id) || id <= 0) continue;
@@ -329,6 +328,7 @@ async function runPublisherOnce() {
   await publishVerticalOnce("coal");
 }
 
+// ---------- RSS helpers ----------
 const rssParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
@@ -337,16 +337,13 @@ const rssParser = new XMLParser({
 function normLink(s) {
   const x = String(s || "").trim();
   if (!x) return "";
-  // strip wrapping <> sometimes found
   return x.replace(/^<|>$/g, "");
 }
 
 function pickRssItems(parsed) {
-  // RSS 2.0: rss.channel.item
   const channel = parsed?.rss?.channel;
   if (channel?.item) return Array.isArray(channel.item) ? channel.item : [channel.item];
 
-  // Atom: feed.entry
   const feed = parsed?.feed;
   if (feed?.entry) return Array.isArray(feed.entry) ? feed.entry : [feed.entry];
 
@@ -354,7 +351,6 @@ function pickRssItems(parsed) {
 }
 
 function getItemKey(item) {
-  // Prefer guid/id, else link, else title hash-ish
   const guid = item?.guid?.["#text"] ?? item?.guid;
   const id = item?.id;
   const link =
@@ -368,10 +364,8 @@ function getItemKey(item) {
 }
 
 function getItemLink(item) {
-  // RSS: link can be string
   if (typeof item?.link === "string") return normLink(item.link);
 
-  // Atom: link is object or array with href
   const l = item?.link;
   if (Array.isArray(l)) {
     const alt = l.find((x) => x?.["@_rel"] === "alternate") || l[0];
@@ -421,7 +415,7 @@ async function ingestRssItem({ url, vertical, sourceId, sourceName, sourceType }
       url,
       vertical,
       source: "rss",
-      metadata: { source_id: sourceId, source_name: sourceName, source_type: sourceType },      
+      metadata: { source_id: sourceId, source_name: sourceName, source_type: sourceType },
       posted_at: new Date().toISOString(),
     }),
   });
@@ -443,8 +437,6 @@ function atomTitle(item) {
 
 function secPassesMaterialFilter(item) {
   const title = atomTitle(item).toLowerCase();
-
-  // Allow-list keywords (tune later)
   const allow = [
     "award",
     "grant",
@@ -468,8 +460,49 @@ function secPassesMaterialFilter(item) {
     "sale",
     "joint venture",
   ];
-
   return allow.some((k) => title.includes(k));
+}
+
+function shouldSkipFeedItem({ item, domain }) {
+  // 1) Age gate
+  const maxAgeHrs = clampInt(process.env.COCKPIT_RSS_MAX_AGE_HOURS || 48, 48, 1, 720);
+  const cutoff = Date.now() - maxAgeHrs * 60 * 60 * 1000;
+
+  const dt = parseItemDate(item);
+  if (dt && dt.getTime() < cutoff) {
+    return { skip: true, reason: `old>${maxAgeHrs}h` };
+  }
+
+  // 2) SEC Atom noise filter
+  const isSec = domain === "www.sec.gov" || domain === "sec.gov";
+  if (isSec && !secPassesMaterialFilter(item)) {
+    return { skip: true, reason: "sec_nonmaterial" };
+  }
+
+  // 3) Mining.com title filter
+  const isMining = domain === "www.mining.com" || domain === "mining.com";
+  if (isMining) {
+    const title = atomTitle(item).toLowerCase();
+    const allow = [
+      "rare",
+      "rare earth",
+      "critical mineral",
+      "magnet",
+      "separation",
+      "scandium",
+      "gallium",
+      "germanium",
+      "dysprosium",
+      "terbium",
+      "neodymium",
+      "praseodymium",
+    ];
+    if (!allow.some((k) => title.includes(k))) {
+      return { skip: true, reason: "mining_title_filter" };
+    }
+  }
+
+  return { skip: false };
 }
 
 async function pollOneFeed(src) {
@@ -484,25 +517,16 @@ async function pollOneFeed(src) {
   const domain = urlStr.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
   const isSec = domain === "www.sec.gov" || domain === "sec.gov";
 
-  // Politeness delay for SEC
   const secDelayMs = clampInt(process.env.COCKPIT_SEC_DELAY_MS || 1200, 1200, 0, 10000);
   if (isSec && secDelayMs > 0) {
     await sleep(secDelayMs);
   }
 
-  // Optionally use a slightly more "browser-like" UA for SEC
-  const ua = isSec
-    ? getEnv(
-        "COCKPIT_SEC_USER_AGENT",
-        defaultUa
-      )
-    : defaultUa;
+  const ua = isSec ? getEnv("COCKPIT_SEC_USER_AGENT", defaultUa) : defaultUa;
 
-  let lastError = null;
   let etag = src?.etag || null;
   let lastModified = src?.last_modified || null;
 
-  // Tag SEC as corporate
   const sourceType = isSec ? "corporate" : "rss";
 
   try {
@@ -547,37 +571,19 @@ async function pollOneFeed(src) {
       const key = getItemKey(item);
       const link = getItemLink(item);
       if (!key || !link) continue;
-    
+
       if (seenSet.has(key)) {
         skipped += 1;
         continue;
       }
 
-      // SEC Atom noise filter: mark as seen but do not ingest if not material
-      if (isSec && !secPassesMaterialFilter(item)) {
+      const gate = shouldSkipFeedItem({ item, domain });
+      if (gate.skip) {
         newlySeen.push(key);
         skipped += 1;
         continue;
       }
-    
-      // ---- AGE GATE START ----
-      const maxAgeHrs = clampInt(
-        process.env.COCKPIT_RSS_MAX_AGE_HOURS || 48,
-        48,
-        1,
-        720
-      );
-      const cutoff = Date.now() - maxAgeHrs * 60 * 60 * 1000;
-    
-      const dt = parseItemDate(item);
-      if (dt && dt.getTime() < cutoff) {
-        // mark as seen so we never ingest it again
-        newlySeen.push(key);
-        skipped += 1;
-        continue;
-      }
-      // ---- AGE GATE END ----
-    
+
       const out = await ingestRssItem({
         url: link,
         vertical: src.vertical,
@@ -585,9 +591,9 @@ async function pollOneFeed(src) {
         sourceName: src.name,
         sourceType,
       });
-    
+
       newlySeen.push(key);
-    
+
       if (out?.inserted) ingested += 1;
       else skipped += 1;
     }
@@ -602,7 +608,7 @@ async function pollOneFeed(src) {
 
     return { fetched: items.length, ingested, skipped };
   } catch (e) {
-    lastError = String(e?.message ?? e);
+    const lastError = String(e?.message ?? e);
     await cockpitPost("/api/sources/rss/report", {
       source_id: src.id,
       etag,
@@ -615,7 +621,6 @@ async function pollOneFeed(src) {
 }
 
 let rssPolling = false;
-
 let lastRssStatusLogAt = 0;
 
 async function runRssOnce() {
@@ -640,14 +645,15 @@ async function runRssOnce() {
         totalIngested += r.ingested;
         totalSkipped += r.skipped;
       } catch (e) {
-        await logToBotLogs(`⚠️ RSS poll error for "${src?.name}" (${src?.vertical}): ${String(e?.message ?? e)}`);
+        await logToBotLogs(
+          `⚠️ RSS poll error for "${src?.name}" (${src?.vertical}): ${String(e?.message ?? e)}`
+        );
       }
     }
 
     const now = Date.now();
     const oneHour = 60 * 60 * 1000;
 
-    // Log if we ingested anything, OR if it's been >= 1 hour since last RSS status log
     if (totalIngested > 0 || now - lastRssStatusLogAt >= oneHour) {
       await logToBotLogs(
         `📥 RSS inflow: sources=${sources.length} fetched=${totalFetched} ingested=${totalIngested} skipped=${totalSkipped}`
@@ -699,9 +705,8 @@ client.once("ready", async () => {
   setInterval(runRssOnce, rssIntervalMs);
 
   // Heartbeat (proof-of-life)
-  setTimeout(heartbeatOnce, 60_000); // 1 min after boot
-  setInterval(heartbeatOnce, 60 * 60 * 1000); // every hour
-  
+  setTimeout(heartbeatOnce, 60_000);
+  setInterval(heartbeatOnce, 60 * 60 * 1000);
 });
 
 // ---------- message handler ----------
