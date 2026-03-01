@@ -530,6 +530,46 @@ function parseMarketIndexAnnouncementLinks(html) {
   return uniq;
 }
 
+function isDiscoveryAlertCategory(urlStr) {
+  const u = String(urlStr || "").toLowerCase();
+  return u.startsWith("https://discoveryalert.com.au/category/");
+}
+
+function parseDiscoveryAlertLinks(html) {
+  // Grab absolute links to discoveryalert articles.
+  const re = /href="(https:\/\/discoveryalert\.com\.au\/[^"]+)"/gi;
+  const out = [];
+  let m;
+  while ((m = re.exec(html)) !== null) out.push(m[1]);
+
+  // Filter out obvious non-articles
+  const filtered = out.filter((u) => {
+    const x = u.toLowerCase();
+    if (!x.startsWith("https://discoveryalert.com.au/")) return false;
+    if (x.includes("/category/")) return false;
+    if (x.includes("/tag/")) return false;
+    if (x.includes("/author/")) return false;
+    if (x.includes("/wp-")) return false;
+    if (x.includes("#")) return false;
+    if (x.includes("?")) return false;
+    // Most real articles are a slug at root path
+    // e.g. https://discoveryalert.com.au/mp-materials-us-government-price-support-transforms-company-finances/
+    return true;
+  });
+
+  // Unique + preserve order
+  const uniq = [];
+  const seen = new Set();
+  for (const u of filtered) {
+    if (!seen.has(u)) {
+      seen.add(u);
+      uniq.push(u);
+    }
+  }
+  return uniq;
+}
+
+
 
 async function pollOneFeed(src) {
   const maxItems = clampInt(process.env.COCKPIT_RSS_MAX_ITEMS_PER_FEED || 10, 10, 1, 50);
@@ -579,6 +619,48 @@ async function pollOneFeed(src) {
     const bodyText = await res.text();
 
     if (!res.ok) throw new Error(`Feed fetch failed ${res.status}: ${bodyText.slice(0, 200)}`);
+
+    // --- DiscoveryAlert category page (HTML list) ---
+    if (isDiscoveryAlertCategory(src.url)) {
+      const links = parseDiscoveryAlertLinks(bodyText).slice(0, maxItems);
+    
+      const keys = links.map((u) => u).filter(Boolean);
+      const seenSet = await fetchSeenKeys(src.id, keys);
+    
+      let ingested = 0;
+      let skipped = 0;
+      const newlySeen = [];
+    
+      for (const link of links) {
+        const key = link;
+        if (seenSet.has(key)) {
+          skipped += 1;
+          continue;
+        }
+    
+        const out = await ingestRssItem({
+          url: link,
+          vertical: src.vertical,
+          sourceId: src.id,
+          sourceName: src.name,
+          sourceType: "rss", // this is media, not corporate
+        });
+    
+        newlySeen.push(key);
+        if (out?.inserted) ingested += 1;
+        else skipped += 1;
+      }
+    
+      await cockpitPost("/api/sources/rss/report", {
+        source_id: src.id,
+        etag,
+        last_modified: lastModified,
+        last_error: null,
+        seen_keys: newlySeen,
+      });
+    
+      return { fetched: links.length, ingested, skipped };
+    }
     
     etag = res.headers.get("etag") || etag;
     lastModified = res.headers.get("last-modified") || lastModified;
