@@ -616,6 +616,8 @@ async function pollOneFeed(src) {
 
 let rssPolling = false;
 
+let lastRssStatusLogAt = 0;
+
 async function runRssOnce() {
   if (rssPolling) return;
   rssPolling = true;
@@ -642,8 +644,15 @@ async function runRssOnce() {
       }
     }
 
-    if (totalIngested > 0) {
-      await logToBotLogs(`📥 RSS inflow: fetched=${totalFetched} ingested=${totalIngested} skipped=${totalSkipped}`);
+    const now = Date.now();
+    const oneHour = 60 * 60 * 1000;
+
+    // Log if we ingested anything, OR if it's been >= 1 hour since last RSS status log
+    if (totalIngested > 0 || now - lastRssStatusLogAt >= oneHour) {
+      await logToBotLogs(
+        `📥 RSS inflow: sources=${sources.length} fetched=${totalFetched} ingested=${totalIngested} skipped=${totalSkipped}`
+      );
+      lastRssStatusLogAt = now;
     }
   } catch (e) {
     await logToBotLogs(`🔥 RSS runner crash: ${String(e?.message ?? e)}`);
